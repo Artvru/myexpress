@@ -47,7 +47,7 @@ function handleEvent(event) {
 
 // เพิ่ม GET Method สำหรับเช็คหน้าเว็บหน้าแรก
 app.get('/', (req, res) => {
-  res.send('hello world, Teerarak');
+  res.send('hello world, Teerarak Jirapanan');
 });
 
 const PORT = process.env.PORT || 3008;
