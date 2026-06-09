@@ -63,7 +63,7 @@ async function handleEvent(event) {
 
   try {
     // =============================================================
-    // ทางเลือกที่ 1: หากผู้ใช้ส่งข้อความ TEXT (ระบบเดิมของคุณ)
+    // ทางเลือกที่ 1: หากผู้ใช้ส่งข้อความ TEXT
     // =============================================================
     if (messageType === 'text') {
       const userText = event.message.text;
@@ -75,16 +75,17 @@ async function handleEvent(event) {
       try {
         const prompt = `ตอบคำถามต่อไปนี้ด้วยภาษาที่เป็นธรรมชาติ กระชับ และสร้างสรรค์ เหมาะสำหรับการอ่านบนแอปแชท LINE: ${userText}`;
         
-        // ปรับการส่งข้อความให้เป็น Array เพื่อความเสถียรสูงสุดของ SDK ตัวใหม่
+        // ปรับโครงสร้างให้อยู่ในรูปของ Content Object เต็มรูปแบบเพื่อความชัวร์
         const response = await ai.models.generateContent({
           model: 'gemini-2.5-flash',
-          contents: [prompt], 
+          contents: [{ role: 'user', parts: [{ text: prompt }] }], 
         });
         
         botReplyText = response.text || 'ไม่สามารถประมวลผลคำตอบได้ในขณะนี้';
       } catch (geminiTextError) {
         console.error('[Gemini Text Error]:', geminiTextError);
-        botReplyText = 'ขออภัยครับ ระบบประมวลผลข้อความจาก Gemini เกิดข้อผิดพลาด';
+        // พ่น Error ออกมาให้เห็นบนหน้าจอ LINE ทันทีเพื่อการ Debug
+        botReplyText = `❌ [Gemini Error]: ${geminiTextError.message || geminiTextError.toString()}`;
       }
     } 
     
@@ -144,7 +145,7 @@ async function handleEvent(event) {
         botReplyText = response.text || 'ไม่สามารถวิเคราะห์รูปภาพได้';
       } catch (geminiImgError) {
         console.error('[Gemini Image Error]:', geminiImgError);
-        botReplyText = 'ขออภัยครับ ระบบวิเคราะห์รูปภาพจาก Gemini เกิดข้อผิดพลาด';
+        botReplyText = `❌ [Gemini Image Error]: ${geminiImgError.message || geminiImgError.toString()}`;
       }
     }
     
@@ -194,11 +195,10 @@ async function handleEvent(event) {
 
   } catch (error) {
     console.error('[System Error] Processing failed:', error);
-    // หากระบบพังที่ส่วนอื่น บอทจะส่งข้อความแจ้งเตือนแทนการเงียบหาย
     try {
       await client.replyMessage({
         replyToken: replyToken,
-        messages: [{ type: 'text', text: 'ระบบเกิดข้อผิดพลาดชั่วคราว กรุณาลองใหม่อีกครั้งครับ' }]
+        messages: [{ type: 'text', text: `❌ [System Error]: ${error.message || error.toString()}` }]
       });
     } catch (replyErr) {
       console.error('[Reply Error in Catch]:', replyErr);
