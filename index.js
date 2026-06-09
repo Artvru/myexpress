@@ -60,6 +60,7 @@ async function handleEvent(event) {
 
   let botReplyText = '';
   let dbContent = '';
+  let replyMessages = []; // <--- เพิ่มตัวแปรอาร์เรย์สำหรับเก็บข้อความที่จะส่งกลับ LINE
 
   try {
     // =============================================================
@@ -75,17 +76,24 @@ async function handleEvent(event) {
       try {
         const prompt = `ตอบคำถามต่อไปนี้ด้วยภาษาที่เป็นธรรมชาติ กระชับ และสร้างสรรค์ เหมาะสำหรับการอ่านบนแอปแชท LINE: ${userText}`;
         
-        // ปรับโครงสร้างให้อยู่ในรูปของ Content Object เต็มรูปแบบเพื่อความชัวร์
         const response = await ai.models.generateContent({
           model: 'gemini-2.5-flash',
           contents: [{ role: 'user', parts: [{ text: prompt }] }], 
         });
         
         botReplyText = response.text || 'ไม่สามารถประมวลผลคำตอบได้ในขณะนี้';
+        
+        // ข้อความแชทปกติ ให้ตอบกลับเพียง 1 บับเบิ้ล
+        replyMessages = [
+          {
+            type: 'text',
+            text: botReplyText
+          }
+        ];
       } catch (geminiTextError) {
         console.error('[Gemini Text Error]:', geminiTextError);
-        // พ่น Error ออกมาให้เห็นบนหน้าจอ LINE ทันทีเพื่อการ Debug
         botReplyText = `❌ [Gemini Error]: ${geminiTextError.message || geminiTextError.toString()}`;
+        replyMessages = [{ type: 'text', text: botReplyText }];
       }
     } 
     
@@ -143,9 +151,23 @@ async function handleEvent(event) {
         });
         
         botReplyText = response.text || 'ไม่สามารถวิเคราะห์รูปภาพได้';
+        
+        // 🔥 ตรงนี้คือสิ่งที่คุณต้องการครับ! สั่งให้ LINE ตอบกลับเป็น 2 บับเบิ้ลต่อเนื่องกัน
+        replyMessages = [
+          {
+            type: 'text',
+            text: '📸 ส่งรูปภาพสำเร็จ และอัปโหลดเข้าสู่ระบบเรียบร้อยแล้วครับ!'
+          },
+          {
+            type: 'text',
+            text: `🐾 สัตว์ในรูปภาพนี้คือ: ${botReplyText}`
+          }
+        ];
+        
       } catch (geminiImgError) {
         console.error('[Gemini Image Error]:', geminiImgError);
         botReplyText = `❌ [Gemini Image Error]: ${geminiImgError.message || geminiImgError.toString()}`;
+        replyMessages = [{ type: 'text', text: botReplyText }];
       }
     }
     
@@ -165,7 +187,7 @@ async function handleEvent(event) {
           type: messageType,
           content: dbContent, 
           reply_token: replyToken,
-          reply_content: botReplyText
+          reply_content: botReplyText // บันทึกผลลัพธ์ชนิดสัตว์ดิบๆ ลง DB เพื่อความสะอาดของข้อมูล
         }
       ]);
 
@@ -182,12 +204,7 @@ async function handleEvent(event) {
     
     const replyResult = await client.replyMessage({
       replyToken: replyToken,
-      messages: [
-        {
-          type: 'text',
-          text: botReplyText
-        }
-      ]
+      messages: replyMessages // <--- เปลี่ยนมาส่งค่าอาร์เรย์ replyMessages ที่เราเตรียมไว้แทน
     });
     
     console.log('[LINE Success] Reply message sent successfully\n-----------------------');
