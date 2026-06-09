@@ -13,14 +13,22 @@ const app = express();
 // 1. ตั้งค่า Supabase และ LINE
 const supabase = createClient(
   process.env.SUPABASE_URL || '',
-  process.env.SUPABASE_KEY || ''
+  // process.env.SUPABASE_KEY || ''
+  process.env.SUPABASE_SERVICE_ROLE_KEY || '' 
 );
 
 const config = {
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN || '',
   channelSecret: process.env.LINE_CHANNEL_SECRET || ''
 };
+
+// Client สำหรับส่งข้อความตอบกลับ
 const client = new line.messagingApi.MessagingApiClient({
+  channelAccessToken: config.channelAccessToken
+});
+
+// เพิ่ม Blob Client สำหรับดึงไฟล์รูปภาพจากเซิร์ฟเวอร์ของ LINE
+const blobClient = new line.messagingApi.MessagingApiBlobClient({
   channelAccessToken: config.channelAccessToken
 });
 
@@ -40,7 +48,8 @@ app.post('/webhook', line.middleware(config), (req, res) => {
 
 // 4. ฟังก์ชันประมวลผลหลัก
 async function handleEvent(event) {
-  if (event.type !== 'message' || event.message.type !== 'text') {
+  // ปรับเงื่อนไขให้รองรับทั้งข้อความ (text) และรูปภาพ (image)
+  if (event.type !== 'message' || (event.message.type !== 'text' && event.message.type !== 'image')) {
     return null;
   }
 
@@ -48,26 +57,87 @@ async function handleEvent(event) {
   const replyToken = event.replyToken;
   const messageId = event.message.id;
   const messageType = event.message.type;
-  const userText = event.message.text;
+
+  let botReplyText = '';
+  let dbContent = '';
 
   try {
-    // -------------------------------------------------------------
-    // ขั้นตอนที่ 1: ส่งคำถามให้ Gemini ตัวใหม่คิดคำตอบ
-    // -------------------------------------------------------------
-    console.log(`[User Request] User ID ${userId} asked: ${userText}`);
-    console.log('[Gemini] Generating response using @google/genai...');
+    // =============================================================
+    // ทางเลือกที่ 1: หากผู้ใช้ส่งข้อความ TEXT (ระบบเดิมของคุณ)
+    // =============================================================
+    if (messageType === 'text') {
+      const userText = event.message.text;
+      dbContent = userText; // สิ่งที่จะบันทึกลงช่อง content ใน DB
+      
+      console.log(`[User Request] User ID ${userId} asked text: ${userText}`);
+      console.log('[Gemini] Generating text response using @google/genai...');
+      
+      const prompt = `ตอบคำถามต่อไปนี้ด้วยภาษาที่เป็นธรรมชาติ กระชับ และสร้างสรรค์ เหมาะสำหรับการอ่านบนแอปแชท LINE: ${userText}`;
+      
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: prompt,
+      });
+      
+      botReplyText = response.text;
+    } 
     
-    const prompt = `ตอบคำถามต่อไปนี้ด้วยภาษาที่เป็นธรรมชาติ กระชับ และสร้างสรรค์ เหมาะสำหรับการอ่านบนแอปแชท LINE: ${userText}`;
+    // =============================================================
+    // ทางเลือกที่ 2: หากผู้ใช้ส่งรูปภาพ IMAGE (โจทย์ Quiz #3 จำแนกรูปสัตว์)
+    // =============================================================
+    else if (messageType === 'image') {
+      console.log(`[User Request] User ID ${userId} sent an image.`);
+      
+      // 1. ดาวน์โหลดรูปภาพจาก LINE ออกมาเป็น Buffer
+      console.log('[LINE] Downloading image stream...');
+      const imageStream = await blobClient.getMessageContent(messageId);
+      const chunks = [];
+      for await (const chunk of imageStream) {
+        chunks.push(chunk);
+      }
+      const imageBuffer = Buffer.concat(chunks);
+      
+      // 2. ตั้งชื่อไฟล์รูปภาพและอัปโหลดขึ้น Supabase Storage (Bucket: uploads)
+      const fileName = `animal_${Date.now()}.jpg`;
+      console.log(`[Supabase Storage] Uploading ${fileName} to 'uploads' bucket...`);
+      
+      const { data: storageData, error: storageError } = await supabase
+        .storage
+        .from('uploads')
+        .upload(fileName, imageBuffer, {
+          contentType: 'image/jpeg',
+          upsert: true
+        });
+
+      if (storageError) {
+        console.error('[Supabase Storage Error] Upload failed:', storageError.message);
+        dbContent = `[Image Upload Failed]: ${fileName}`;
+      } else {
+        console.log('[Supabase Storage Success] Image uploaded successfully.');
+        // ดึง Public URL ของรูปภาพเพื่อนำไปบันทึกลงฐานข้อมูลข้อมูล
+        const { data: urlData } = supabase.storage.from('uploads').getPublicUrl(fileName);
+        dbContent = urlData.publicUrl;
+      }
+
+      // 3. ส่งรูปภาพคู่กับคำสั่งไปให้ Gemini วิเคราะห์หาชนิดสัตว์
+      console.log('[Gemini] Analyzing animal image using @google/genai...');
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: [
+          'วิเคราะห์รูปภาพนี้แล้วบอกว่าเป็นสัตว์ชนิดใด ให้ตอบเฉพาะชื่อสัตว์อย่างเดียวสั้นๆ กระชับ เช่น แมว, สุนัข, สิงโต, นกแก้ว เป็นต้น (ถ้าไม่ใช่รูปสัตว์ให้ตอบว่า ไม่พบรูปภาพสัตว์ในระบบ)',
+          {
+            inlineData: {
+              data: imageBuffer.toString('base64'),
+              mimeType: 'image/jpeg'
+            }
+          }
+        ],
+      });
+      
+      botReplyText = response.text;
+    }
     
-    // เปลี่ยนวิธีการเขียนโครงสร้างการเรียกใช้งานของ SDK ตัวใหม่
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash', // เลือกโมเดลที่ต้องการใช้
-      contents: prompt,
-    });
-    
-    const botReplyText = response.text;
-    
-    console.log('[Gemini Success] Response generated.');
+    console.log('[Gemini Success] Response generated:', botReplyText);
 
     // -------------------------------------------------------------
     // ขั้นตอนที่ 2: บันทึกข้อมูลลงฐานข้อมูล Supabase
@@ -81,7 +151,7 @@ async function handleEvent(event) {
           user_id: userId,
           message_id: messageId,
           type: messageType,
-          content: userText,
+          content: dbContent, // บันทึกข้อความแชท หรือลิงก์รูปภาพจาก Storage
           reply_token: replyToken,
           reply_content: botReplyText
         }
