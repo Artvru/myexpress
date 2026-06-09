@@ -2,7 +2,7 @@ const line = require('@line/bot-sdk');
 const express = require('express');
 const dotenv = require('dotenv');
 const { createClient } = require('@supabase/supabase-js');
-// เปลี่ยนมาเรียกใช้ตัวใหม่ตามแพ็กเกจ @google/genai
+// เรียกใช้ตัวใหม่ตามแพ็กเกจ @google/genai
 const { GoogleGenAI } = require('@google/genai');
 
 // โหลดค่าความลับจากไฟล์ .env
@@ -72,14 +72,20 @@ async function handleEvent(event) {
       console.log(`[User Request] User ID ${userId} asked text: ${userText}`);
       console.log('[Gemini] Generating text response using @google/genai...');
       
-      const prompt = `ตอบคำถามต่อไปนี้ด้วยภาษาที่เป็นธรรมชาติ กระชับ และสร้างสรรค์ เหมาะสำหรับการอ่านบนแอปแชท LINE: ${userText}`;
-      
-      const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: prompt,
-      });
-      
-      botReplyText = response.text;
+      try {
+        const prompt = `ตอบคำถามต่อไปนี้ด้วยภาษาที่เป็นธรรมชาติ กระชับ และสร้างสรรค์ เหมาะสำหรับการอ่านบนแอปแชท LINE: ${userText}`;
+        
+        // ปรับการส่งข้อความให้เป็น Array เพื่อความเสถียรสูงสุดของ SDK ตัวใหม่
+        const response = await ai.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: [prompt], 
+        });
+        
+        botReplyText = response.text || 'ไม่สามารถประมวลผลคำตอบได้ในขณะนี้';
+      } catch (geminiTextError) {
+        console.error('[Gemini Text Error]:', geminiTextError);
+        botReplyText = 'ขออภัยครับ ระบบประมวลผลข้อความจาก Gemini เกิดข้อผิดพลาด';
+      }
     } 
     
     // =============================================================
@@ -120,21 +126,26 @@ async function handleEvent(event) {
       }
 
       // 3. ส่งรูปภาพคู่กับคำสั่งไปให้ Gemini วิเคราะห์หาชนิดสัตว์
-      console.log('[Gemini] Analyzing animal image using @google/genai...');
-      const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: [
-          'วิเคราะห์รูปภาพนี้แล้วบอกว่าเป็นสัตว์ชนิดใด ให้ตอบเฉพาะชื่อสัตว์อย่างเดียวสั้นๆ กระชับ เช่น แมว, สุนัข, สิงโต, นกแก้ว เป็นต้น (ถ้าไม่ใช่รูปสัตว์ให้ตอบว่า ไม่พบรูปภาพสัตว์ในระบบ)',
-          {
-            inlineData: {
-              data: imageBuffer.toString('base64'),
-              mimeType: 'image/jpeg'
+      try {
+        console.log('[Gemini] Analyzing animal image using @google/genai...');
+        const response = await ai.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: [
+            'วิเคราะห์รูปภาพนี้แล้วบอกว่าเป็นสัตว์ชนิดใด ให้ตอบเฉพาะชื่อสัตว์อย่างเดียวสั้นๆ กระชับ เช่น แมว, สุนัข, สิงโต, นกแก้ว เป็นต้น (ถ้าไม่ใช่รูปสัตว์ให้ตอบว่า ไม่พบรูปภาพสัตว์ในระบบ)',
+            {
+              inlineData: {
+                data: imageBuffer.toString('base64'),
+                mimeType: 'image/jpeg'
+              }
             }
-          }
-        ],
-      });
-      
-      botReplyText = response.text;
+          ],
+        });
+        
+        botReplyText = response.text || 'ไม่สามารถวิเคราะห์รูปภาพได้';
+      } catch (geminiImgError) {
+        console.error('[Gemini Image Error]:', geminiImgError);
+        botReplyText = 'ขออภัยครับ ระบบวิเคราะห์รูปภาพจาก Gemini เกิดข้อผิดพลาด';
+      }
     }
     
     console.log('[Gemini Success] Response generated:', botReplyText);
@@ -151,7 +162,7 @@ async function handleEvent(event) {
           user_id: userId,
           message_id: messageId,
           type: messageType,
-          content: dbContent, // บันทึกข้อความแชท หรือลิงก์รูปภาพจาก Storage
+          content: dbContent, 
           reply_token: replyToken,
           reply_content: botReplyText
         }
@@ -183,6 +194,15 @@ async function handleEvent(event) {
 
   } catch (error) {
     console.error('[System Error] Processing failed:', error);
+    // หากระบบพังที่ส่วนอื่น บอทจะส่งข้อความแจ้งเตือนแทนการเงียบหาย
+    try {
+      await client.replyMessage({
+        replyToken: replyToken,
+        messages: [{ type: 'text', text: 'ระบบเกิดข้อผิดพลาดชั่วคราว กรุณาลองใหม่อีกครั้งครับ' }]
+      });
+    } catch (replyErr) {
+      console.error('[Reply Error in Catch]:', replyErr);
+    }
   }
 }
 
