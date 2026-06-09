@@ -1,56 +1,123 @@
-// index.js
-require('dotenv').config(); // โหลดไฟล์ .env ทันทีตั้งแต่บรรทัดแรก
-const express = require('express');
 const line = require('@line/bot-sdk');
+const express = require('express');
+const dotenv = require('dotenv');
+const { createClient } = require('@supabase/supabase-js');
+// เปลี่ยนมาเรียกใช้ตัวใหม่ตามแพ็กเกจ @google/genai
+const { GoogleGenAI } = require('@google/genai');
+
+// โหลดค่าความลับจากไฟล์ .env
+dotenv.config();
 
 const app = express();
 
-// 1. ดึงค่าจากไฟล์ .env อย่างปลอดภัยตามปกติ
+// 1. ตั้งค่า Supabase และ LINE
+const supabase = createClient(
+  process.env.SUPABASE_URL || '',
+  process.env.SUPABASE_KEY || ''
+);
+
 const config = {
-  channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN || "",
-  channelSecret: process.env.LINE_CHANNEL_SECRET || ""
+  channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN || '',
+  channelSecret: process.env.LINE_CHANNEL_SECRET || ''
 };
+const client = new line.messagingApi.MessagingApiClient({
+  channelAccessToken: config.channelAccessToken
+});
 
-// 2. สร้าง client จากเวอร์ชันใหม่
-const client = new line.messagingApi.MessagingApiClient(config);
+// 2. เริ่มต้นใช้งาน Gemini SDK ตัวใหม่ (@google/genai)
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 
-app.use('/webhook', line.middleware(config));
-
-// รับ webhook
-app.post('/webhook', (req, res) => {
+// 3. สร้างเส้นทาง Webhook สำหรับ LINE
+app.post('/webhook', line.middleware(config), (req, res) => {
   Promise
     .all(req.body.events.map(handleEvent))
-    .then(result => res.json(result))
+    .then((result) => res.json(result))
     .catch((err) => {
-      console.error("Webhook Error เกิดข้อผิดพลาด:", err);
+      console.error('[Webhook Error]:', err);
       res.status(500).end();
     });
 });
 
-// ตอบกลับข้อความ
-function handleEvent(event) {
+// 4. ฟังก์ชันประมวลผลหลัก
+async function handleEvent(event) {
   if (event.type !== 'message' || event.message.type !== 'text') {
-    return Promise.resolve(null);
+    return null;
   }
 
-  // ✅ แก้ไขให้เป็นรูปแบบการส่งข้อความของเวอร์ชันใหม่เรียบร้อยแล้ว
-  return client.replyMessage({
-    replyToken: event.replyToken,
-    messages: [
-      {
-        type: 'text',
-        text: `คุณพิมพ์ว่า: ${event.message.text}`
-      }
-    ]
-  });
+  const userId = event.source.userId || 'unknown';
+  const replyToken = event.replyToken;
+  const messageId = event.message.id;
+  const messageType = event.message.type;
+  const userText = event.message.text;
+
+  try {
+    // -------------------------------------------------------------
+    // ขั้นตอนที่ 1: ส่งคำถามให้ Gemini ตัวใหม่คิดคำตอบ
+    // -------------------------------------------------------------
+    console.log(`[User Request] User ID ${userId} asked: ${userText}`);
+    console.log('[Gemini] Generating response using @google/genai...');
+    
+    const prompt = `ตอบคำถามต่อไปนี้ด้วยภาษาที่เป็นธรรมชาติ กระชับ และสร้างสรรค์ เหมาะสำหรับการอ่านบนแอปแชท LINE: ${userText}`;
+    
+    // เปลี่ยนวิธีการเขียนโครงสร้างการเรียกใช้งานของ SDK ตัวใหม่
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash', // เลือกโมเดลที่ต้องการใช้
+      contents: prompt,
+    });
+    
+    const botReplyText = response.text;
+    
+    console.log('[Gemini Success] Response generated.');
+
+    // -------------------------------------------------------------
+    // ขั้นตอนที่ 2: บันทึกข้อมูลลงฐานข้อมูล Supabase
+    // -------------------------------------------------------------
+    console.log('[Supabase] Start saving message to database...');
+    
+    const { error } = await supabase
+      .from('messages')
+      .insert([
+        {
+          user_id: userId,
+          message_id: messageId,
+          type: messageType,
+          content: userText,
+          reply_token: replyToken,
+          reply_content: botReplyText
+        }
+      ]);
+
+    if (error) {
+      console.error('[Supabase Error] Database insert failed:', error.message);
+    } else {
+      console.log('[Supabase Success] Database insert successfully');
+    }
+
+    // -------------------------------------------------------------
+    // ขั้นตอนที่ 3: ตอบกลับข้อความทาง LINE
+    // -------------------------------------------------------------
+    console.log('[LINE] Sending reply message to user...');
+    
+    const replyResult = await client.replyMessage({
+      replyToken: replyToken,
+      messages: [
+        {
+          type: 'text',
+          text: botReplyText
+        }
+      ]
+    });
+    
+    console.log('[LINE Success] Reply message sent successfully\n-----------------------');
+    return replyResult;
+
+  } catch (error) {
+    console.error('[System Error] Processing failed:', error);
+  }
 }
 
-// เพิ่ม GET Method สำหรับเช็คหน้าเว็บหน้าแรก
-app.get('/', (req, res) => {
-  res.send('hello world, Teerarak Jirapanan');
-});
-
+// 5. เปิดเซิร์ฟเวอร์
 const PORT = process.env.PORT || 3008;
 app.listen(PORT, () => {
-  console.log(`Server running at http://localhost:${PORT}`);
+  console.log(`Server is running on port ${PORT} with New Gemini SDK`);
 });
