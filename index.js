@@ -77,7 +77,7 @@ async function handleEvent(event) {
         
         // ปรับโครงสร้างให้อยู่ในรูปของ Content Object เต็มรูปแบบเพื่อความชัวร์
         const response = await ai.models.generateContent({
-          model: 'gemini-2.0-flash-lite',
+          model: 'gemini-1.5-flash',
           contents: [{ role: 'user', parts: [{ text: prompt }] }], 
         });
         
@@ -130,7 +130,7 @@ async function handleEvent(event) {
       try {
         console.log('[Gemini] Analyzing animal image using @google/genai...');
         const response = await ai.models.generateContent({
-          model: 'gemini-2.0-flash-lite',
+          model: 'gemini-1.5-flash',
           contents: [
             'วิเคราะห์รูปภาพนี้แล้วบอกว่าเป็นสัตว์ชนิดใด ให้ตอบเฉพาะชื่อสัตว์อย่างเดียวสั้นๆ กระชับ เช่น แมว, สุนัข, สิงโต, นกแก้ว เป็นต้น (ถ้าไม่ใช่รูปสัตว์ให้ตอบว่า ไม่พบรูปภาพสัตว์ในระบบ)',
             {
